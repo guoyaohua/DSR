@@ -125,7 +125,7 @@ def getAandG(data):
             
     a = np.array(a,dtype = 'int16')
     w = np.array(w,dtype = 'int16')
-    a = a / 32768 * 16    #单位为g
+    a = a / 32768.0 * 16    #单位为g
     w = w / 32768.0 * 2000  # 单位为°/s
     #数据对齐,将短的轴按末尾数值补齐
     len_diff = len(a[0])-len(w[0])
@@ -143,14 +143,14 @@ def getAandG(data):
 '''
 读取指定目录原始数据，将其整合成为numpy，
 '''
-def saveDataToNP(rootPath ,savePath = "DataSet_NPSave/DataSet.npy"):
+def saveDataToNP(rootPath ,savePath = "../DataSet_NPSave/DataSet.npy"):
     DataSet = []
     Labels = {"加速":1,"碰撞":2,"匀速":3,"左转":4,"右转":5}
     fileList = getFileList(rootPath)
     print("正在生成文件，请稍后...")  
     for root,files in fileList:
-        print(root.split('\\')[-1])
-        label = Labels[root.split('\\')[-1]]
+        print(root.split('/')[-1])
+        label = Labels[root.split('/')[-1]]
         for filePath in files:
             filePath = root+ '/' + filePath
             fileData = readFile(filePath)
@@ -204,7 +204,7 @@ kind 为插值方式
     #"quadratic","cubic" 为2阶、3阶B样条曲线插值
 savaPath 为数据保存路径
 '''
-def interpolation(originData,sample = 300,kind ="cubic",savePath="DataSet_NPSave/JustifiedData.npy"):
+def interpolation(originData,sample = 300,kind ="cubic",savePath="../DataSet_NPSave/JustifiedData.npy"):
     JutifiedDataSet = []
     print("正在生成转换文件，请稍后...") 
     for data in originData:
@@ -243,8 +243,8 @@ def getTrainTestSet(dataPath = "JustifiedData.npy",test_size = 0.1):
 #     print(np.array(Y).shape)
     X = np.array(X)
     Y = np.array(Y)
-    np.save("orin-X",X)
-    np.save("orin-Y",Y)
+    np.save("../DataSet_NPSave/orin-X",X)
+    np.save("../DataSet_NPSave/orin-Y",Y)
     #打乱顺序
     X,Y = shuffle(X,Y,random_state=0)
 #     X_train, X_test, y_train, y_test

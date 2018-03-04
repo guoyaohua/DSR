@@ -10,9 +10,10 @@ Created on Mon Feb 26 16:06:04 2018
 import GetDataUtil
 import numpy as np
 
-
+originData = GetDataUtil.saveDataToNP("../DataSet/trim",savePath = "../DataSet_NPSave/DataSet.npy")
+GetDataUtil.interpolation(originData,sample = 300,kind ="cubic",savePath="../DataSet_NPSave/JustifiedData.npy")
 # 加载文件
-justifiedData = np.load("DataSet_NPSave/JustifiedData.npy")
+justifiedData = np.load("../DataSet_NPSave/JustifiedData.npy")
 print(len(justifiedData))
 accelerate_data = []
 collision_data = []
@@ -48,7 +49,7 @@ print(right_turn_data.shape)
 '''
 算法一：基于非主特征轴加权融合数据增强算法
 '''
-def DataArgument_1(rawData,label,expNum=500,weight=0.8,savePath="DataSet_NPSave/AugmentatedData"):
+def DataArgument_1(rawData,label,expNum=500,weight=0.8,savePath="../DataSet_NPSave/AugmentatedData"):
      AugmentatedData = []
      rawLenth = len(rawData)
      augNum = expNum - rawLenth
@@ -85,7 +86,7 @@ def DataArgument_1(rawData,label,expNum=500,weight=0.8,savePath="DataSet_NPSave/
      AandO = np.concatenate((rawData,AugmentatedData))
      print(AandO.shape)
      # 将生成的数据集和原始数据集拼接后保存
-     np.save("DataSet_NPSave/Aug1+orgin"+Labels[label-1],AandO)
+     np.save("../DataSet_NPSave/Aug1+orgin"+Labels[label-1],AandO)
      
      return AugmentatedData
 
@@ -103,16 +104,16 @@ AugDataAll = np.concatenate((DataArgument_1(accelerate_data,1),
                              DataArgument_1(left_turn_data,4),
                              DataArgument_1(right_turn_data,5)))
 
-AugAndOrginData = np.concatenate((np.load("DataSet_NPSave/Aug1+orgin加速.npy"),
-                                  np.load("DataSet_NPSave/Aug1+orgin碰撞.npy"),
-                                  np.load("DataSet_NPSave/Aug1+orgin匀速.npy"),
-                                  np.load("DataSet_NPSave/Aug1+orgin左转.npy"),
-                                  np.load("DataSet_NPSave/Aug1+orgin右转.npy"),))
+AugAndOrginData = np.concatenate((np.load("../DataSet_NPSave/Aug1+orgin加速.npy"),
+                                  np.load("../DataSet_NPSave/Aug1+orgin碰撞.npy"),
+                                  np.load("../DataSet_NPSave/Aug1+orgin匀速.npy"),
+                                  np.load("../DataSet_NPSave/Aug1+orgin左转.npy"),
+                                  np.load("../DataSet_NPSave/Aug1+orgin右转.npy"),))
 print(AugDataAll.shape)
 print(AugAndOrginData.shape)
 
-np.save("DataSet_NPSave/AugDataAll",AugDataAll)
-np.save("DataSet_NPSave/AugAndOrginData",AugAndOrginData)
+np.save("../DataSet_NPSave/AugDataAll",AugDataAll)
+np.save("../DataSet_NPSave/AugAndOrginData",AugAndOrginData)
 
 #%%
 '''
@@ -125,7 +126,7 @@ import numpy as np
 rawData : 原始数据，字典
 noiseData ：噪声数据，数组 
 '''
-def DataArgument_2(rawData,noiseData,savePath="DataSet_NPSave/NoiseAugmentatedData"):
+def DataArgument_2(rawData,noiseData,savePath="../DataSet_NPSave/NoiseAugmentatedData"):
      AugmentatedData = []
      noiseLength = noiseData.shape[1]
      print("正在生成数据，请稍后...")
@@ -146,26 +147,26 @@ def DataArgument_2(rawData,noiseData,savePath="DataSet_NPSave/NoiseAugmentatedDa
 # 生成数据
 noiseDataDic = {}
 
-noiseData = np.concatenate(GetDataUtil.getAandG(GetDataUtil.readFile("DataSet/静止/2017-12-23-匀速")),axis = 0)
+noiseData = np.concatenate(GetDataUtil.getAandG(GetDataUtil.readFile("../DataSet/静止/2017-12-23-匀速")),axis = 0)
 print(noiseData.shape)
 
-rawData = np.load("DataSet_NPSave/AugAndOrginData.npy")
+rawData = np.load("../DataSet_NPSave/AugAndOrginData.npy")
 AugmentatedData = DataArgument_2(rawData,
                                  noiseData,
-                                 savePath="DataSet_NPSave/NoiseAugmentatedData")
+                                 savePath="../DataSet_NPSave/NoiseAugmentatedData")
 print(AugmentatedData.shape)
 
 # 将通过噪声融合生成的数据和原始数据合并保存
 
-np.save("DataSet_NPSave/NPAWF_Noise_orgin_all_5000",
+np.save("../DataSet_NPSave/NPAWF_Noise_orgin_all_5000",
         np.concatenate((rawData,AugmentatedData)))
-print("文件保存在：DataSet_NPSave/NPAWF_Noise_orgin_all_5000.npy")
+print("文件保存在：../DataSet_NPSave/NPAWF_Noise_orgin_all_5000.npy")
 #%%
 '''
 算法三：随即剪切数据增强
 rawData : 原始数据，字典
 '''
-def DataArgument_3(rawData,savePath="DataSet_NPSave/RandomCropAugmentatedData"):
+def DataArgument_3(rawData,savePath="../DataSet_NPSave/RandomCropAugmentatedData"):
      AugmentatedData = []
      print("正在生成数据，请稍后...")
      for data in rawData:
@@ -186,18 +187,90 @@ def DataArgument_3(rawData,savePath="DataSet_NPSave/RandomCropAugmentatedData"):
                                       savePath=savePath)
 
 
-rawData = np.load("DataSet_NPSave/NPAWF_Noise_orgin_all_5000.npy")
+rawData = np.load("../DataSet_NPSave/NPAWF_Noise_orgin_all_5000.npy")
 AugmentatedData = DataArgument_3(rawData,
-                                 savePath="DataSet_NPSave/RandomCropAugmentatedData")
+                                 savePath="../DataSet_NPSave/RandomCropAugmentatedData")
 print(AugmentatedData.shape)
 
 # 将通过噪声融合生成的数据和原始数据合并保存
 
-np.save("DataSet_NPSave/RandomCrop_NPAWF_Noise_orgin_all_10000",
+np.save("../DataSet_NPSave/RandomCrop_NPAWF_Noise_orgin_all_10000",
         np.concatenate((rawData,AugmentatedData)))
-print("文件保存在：DataSet_NPSave/RandomCrop_NPAWF_Noise_orgin_all_10000.npy")
+print("文件保存在：../DataSet_NPSave/RandomCrop_NPAWF_Noise_orgin_all_10000.npy")
 
+#%%
+'''提纯数据集,手动改变加速度'''
+
+orinDataSet = np.load("../DataSet_NPSave/RandomCrop_NPAWF_Noise_orgin_all_10000.npy")
+
+# Labels = ["加速","碰撞","匀速","左转","右转"]
+
+accelerate_data = []
+collision_data = []
+uniform_speed_data = []
+left_turn_data = []
+right_turn_data = []
+
+for data in orinDataSet:
+     if data["Label"] == 1:
+          accelerate_data.append(data)
+     elif data["Label"] == 2:
+          collision_data.append(data)
+     elif data["Label"] == 3:
+          uniform_speed_data.append(data)
+     elif data["Label"] == 4:
+          left_turn_data.append(data)
+     elif data["Label"] == 5:
+          right_turn_data.append(data)
+# 转换为numpy
+accelerate_data = np.array(accelerate_data)
+collision_data = np.array(collision_data)
+uniform_speed_data = np.array(uniform_speed_data)
+left_turn_data = np.array(left_turn_data)
+right_turn_data = np.array(right_turn_data)
+
+print(accelerate_data.shape)
+print(collision_data.shape)
+print(uniform_speed_data.shape)
+print(left_turn_data.shape)
+print(right_turn_data.shape)
+
+count = 0
+for data in accelerate_data:
+     data["Acc"][0] += 0.05
+     count += 1
+print("已完成%d个样本增加0.05"%(count))
      
+# 数组拼接
+AllData_Acc_005 = np.concatenate((accelerate_data,
+                                  collision_data,
+                                  uniform_speed_data,
+                                  left_turn_data,
+                                  right_turn_data))
+np.save("../DataSet_NPSave/RandomCrop_NPAWF_Noise_orgin_all_ACC_005_10000.npy",AllData_Acc_005)
+
+count = 0
+for data in accelerate_data:
+     data["Acc"][0] += 0.05
+     count += 1
+print("已完成%d个样本增加0.1"%(count))
+
+# 数组拼接
+AllData_Acc_01 = np.concatenate((accelerate_data,
+                                  collision_data,
+                                  uniform_speed_data,
+                                  left_turn_data,
+                                  right_turn_data))
+np.save("../DataSet_NPSave/RandomCrop_NPAWF_Noise_orgin_all_ACC_01_10000.npy",AllData_Acc_01)
+#%%
+   
+
+
+
+
+
+
+ 
 #%%
 import matplotlib.pyplot as plt
 

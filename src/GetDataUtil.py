@@ -250,6 +250,33 @@ def getTrainTestSet(dataPath = "JustifiedData.npy",test_size = 0.1):
 #     X_train, X_test, y_train, y_test
     return train_test_split(X,Y,test_size = test_size,random_state = 0)
 
+'''
+将dic中的data和label分离并返回X,Y
+参数：
+    dataPath 数据文件地址
+输出：
+    X，Y
+    shape = (6,300)
+'''  
+def splitDataAndLabel(dataPath = "../DataSet_NPSave/RandomCrop_NPAWF_Noise_orgin_all_10000.npy"):
+    X = []
+    Y = []
+    dataSet = np.load(dataPath)
+    for data in dataSet:
+        S = data["Acc"]
+        S = np.concatenate((S,data["Gyr"]),axis = 0)
+        X.append(S)
+        Y.append(data["Label"])
+
+    X = np.array(X)
+    Y = np.array(Y)
+
+    #打乱顺序
+    X,Y = shuffle(X,Y,random_state=0)
+#     data,label
+    return X,Y
+    
+    
 #%%
 '''
 数据初始化函数:

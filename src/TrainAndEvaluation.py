@@ -3,7 +3,10 @@
 import argparse
 import os
 import time
-
+from MuiltiViewCNNLayer.MvCnnLeftLayer import MvCnnLeftLayer
+from MuiltiViewCNNLayer.MvCnnRightLayer import MvCnnRightLayer
+from MuiltiViewCNNLayer.MvCnnUpLayer import MvCnnUpLayer
+from MuiltiViewCNNLayer.MvCnnDownLayer import MvCnnDownLayer
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -115,6 +118,906 @@ def LoadData():
     print("y_test:", y_test.shape)
 
     return x_train, x_train_FA, x_train_DA, x_train_DA_FA, x_test, x_test_FA, y_train, y_train_DA, y_test
+
+def SCNN_D_F(SCNN_D_input):
+    '''
+        SCNN_Down 向下传递信息
+
+        状态释义：
+            state = 1：(when i == 0 && H > 2)
+                无slice_top，存在slice_conv,slice_add,slice_bottom
+            state = 2: (when i == H-2 && i > 0)
+                无slice_bottom，存在slice_top,slice_conv,slice_add
+            state = 3: (when i == H-1 && i > 0)
+                无slice_add,slice_bottom，存在slice_top,slice_conv
+            state = 4: (when H == 1)
+                无slice_top,slice_add,slice_bottom，存在slice_conv
+            state = 5: (when i == 0 && H == 2)
+                无slice_top,slice_bottom，存在slice_conv,slice_add
+            state = 6:
+                存在slice_top,slice_conv,slice_add,slice_bottom
+    '''
+    CHANNELS = SCNN_D_input.shape[3]
+    FEATURE_MAP_H = SCNN_D_input.shape[1]
+    # 声明参数
+    w = tf.get_variable(name='w_scnn_d',
+                        shape=[CHANNELS,
+                               SCNN_KERNEL_LENGTH,
+                               1,
+                               CHANNELS],
+                        initializer=tf.keras.initializers.zeros(),
+                        trainable = False,
+                        regularizer=tf.keras.regularizers.l2())
+    b = tf.Variable(tf.zeros(CHANNELS),
+                    trainable = False,
+                    name="b_scnn_d")
+
+    # 用于动态生成网络层
+    SCNN_D = {}
+
+    for i in range(FEATURE_MAP_H):
+        # State 1 : 无slice_top，存在slice_conv,slice_add,slice_bottom
+        if i == 0 and FEATURE_MAP_H > 2:
+            SCNN_D['slice_conv_'+str(i)] = tf.slice(SCNN_D_input,
+                                                    begin=[0, i, 0, 0],
+                                                    size=[-1, 1, -1, -1])
+            SCNN_D['slice_add_'+str(i)] = tf.slice(SCNN_D_input,
+                                                   begin=[0, i+1, 0, 0],
+                                                   size=[-1, 1, -1, -1])
+            SCNN_D['slice_bottom_'+str(i)] = tf.slice(SCNN_D_input,
+                                                      begin=[0, i+2, 0, 0],
+                                                      size=[-1, -1, -1, -1])
+            SCNN_D['tran_bef_'+str(i)] = tf.transpose(SCNN_D['slice_conv_'+str(i)],
+                                                      perm=[0, 3, 2, 1])
+            SCNN_D['pad_'+str(i)] = tf.pad(SCNN_D['tran_bef_'+str(i)],
+                                           paddings=PADDING,
+                                           mode='CONSTANT',
+                                           constant_values=0)
+            SCNN_D['conv_'+str(i)] = tf.nn.conv2d(SCNN_D['pad_'+str(i)],
+                                                  filter=w,
+                                                  strides=[1, 1, 1, 1],
+                                                  padding='VALID',
+                                                  use_cudnn_on_gpu=True,
+                                                  data_format='NHWC',
+                                                  dilations=[1, 1, 1, 1])
+            SCNN_D['conv_bias_relu_'+str(i)] = tf.nn.relu(tf.nn.bias_add(SCNN_D['conv_'+str(i)], b),
+                                                          name=None)
+            SCNN_D['add_'+str(i)] = tf.add(SCNN_D['conv_bias_relu_'+str(i)],
+                                           SCNN_D['slice_add_'+str(i)])
+            SCNN_D['concat_'+str(i)] = tf.concat(values=[SCNN_D['conv_bias_relu_'+str(i)],
+                                                         SCNN_D['add_' +
+                                                                str(i)],
+                                                         SCNN_D['slice_bottom_'+str(i)]], axis=1)
+        # State 2 : 无slice_bottom，存在slice_top,slice_conv,slice_add
+        elif i == FEATURE_MAP_H - 2 and i > 0:
+            SCNN_D['slice_top_'+str(i)] = tf.slice(SCNN_D['concat_'+str(i-1)],
+                                                   begin=[0, 0, 0, 0],
+                                                   size=[-1, i, -1, -1])
+            SCNN_D['slice_conv_'+str(i)] = tf.slice(SCNN_D['concat_'+str(i-1)],
+                                                    begin=[0, i, 0, 0],
+                                                    size=[-1, 1, -1, -1])
+            SCNN_D['slice_add_'+str(i)] = tf.slice(SCNN_D['concat_'+str(i-1)],
+                                                   begin=[0, i+1, 0, 0],
+                                                   size=[-1, 1, -1, -1])
+            SCNN_D['tran_bef_'+str(i)] = tf.transpose(SCNN_D['slice_conv_'+str(i)],
+                                                      perm=[0, 3, 2, 1])
+            SCNN_D['pad_'+str(i)] = tf.pad(SCNN_D['tran_bef_'+str(i)],
+                                           paddings=PADDING,
+                                           mode='CONSTANT',
+                                           constant_values=0)
+            SCNN_D['conv_'+str(i)] = tf.nn.conv2d(SCNN_D['pad_'+str(i)],
+                                                  filter=w,
+                                                  strides=[1, 1, 1, 1],
+                                                  padding='VALID',
+                                                  use_cudnn_on_gpu=True,
+                                                  data_format='NHWC',
+                                                  dilations=[1, 1, 1, 1])
+            SCNN_D['conv_bias_relu_'+str(i)] = tf.nn.relu(tf.nn.bias_add(SCNN_D['conv_'+str(i)], b),
+                                                          name=None)
+            SCNN_D['add_'+str(i)] = tf.add(SCNN_D['conv_bias_relu_'+str(i)],
+                                           SCNN_D['slice_add_'+str(i)])
+            SCNN_D['concat_'+str(i)] = tf.concat(values=[SCNN_D['slice_top_'+str(i)],
+                                                         SCNN_D['conv_bias_relu_' +
+                                                                str(i)],
+                                                         SCNN_D['add_'+str(i)]], axis=1)
+        # State 3 : 无slice_add,slice_bottom，存在slice_top,slice_conv
+        elif i == FEATURE_MAP_H - 1 and i > 0:
+            SCNN_D['slice_top_'+str(i)] = tf.slice(SCNN_D['concat_'+str(i-1)],
+                                                   begin=[0, 0, 0, 0],
+                                                   size=[-1, i, -1, -1])
+            SCNN_D['slice_conv_'+str(i)] = tf.slice(SCNN_D['concat_'+str(i-1)],
+                                                    begin=[0, i, 0, 0],
+                                                    size=[-1, 1, -1, -1])
+            SCNN_D['tran_bef_'+str(i)] = tf.transpose(SCNN_D['slice_conv_'+str(i)],
+                                                      perm=[0, 3, 2, 1])
+            SCNN_D['pad_'+str(i)] = tf.pad(SCNN_D['tran_bef_'+str(i)],
+                                           paddings=PADDING,
+                                           mode='CONSTANT',
+                                           constant_values=0)
+            SCNN_D['conv_'+str(i)] = tf.nn.conv2d(SCNN_D['pad_'+str(i)],
+                                                  filter=w,
+                                                  strides=[1, 1, 1, 1],
+                                                  padding='VALID',
+                                                  use_cudnn_on_gpu=True,
+                                                  data_format='NHWC',
+                                                  dilations=[1, 1, 1, 1],
+                                                  name=None)
+            SCNN_D['conv_bias_relu_'+str(i)] = tf.nn.relu(tf.nn.bias_add(SCNN_D['conv_'+str(i)], b),
+                                                          name=None)
+            SCNN_D['concat_'+str(i)] = tf.concat(values=[SCNN_D['slice_top_'+str(i)],
+                                                         SCNN_D['conv_bias_relu_'+str(i)]], axis=1)
+        # State 4 : 无slice_top,slice_add,slice_bottom，存在slice_conv
+        elif FEATURE_MAP_H == 1:
+            SCNN_D['slice_conv_'+str(i)] = tf.slice(SCNN_D_input,
+                                                    begin=[0, i, 0, 0],
+                                                    size=[-1, -1, -1, -1])
+            SCNN_D['tran_bef_'+str(i)] = tf.transpose(SCNN_D['slice_conv_'+str(i)],
+                                                      perm=[0, 3, 2, 1])
+            SCNN_D['pad_'+str(i)] = tf.pad(SCNN_D['tran_bef_'+str(i)],
+                                           paddings=PADDING,
+                                           mode='CONSTANT',
+                                           constant_values=0)
+            SCNN_D['conv_'+str(i)] = tf.nn.conv2d(SCNN_D['pad_'+str(i)],
+                                                  filter=w,
+                                                  strides=[1, 1, 1, 1],
+                                                  padding='VALID',
+                                                  use_cudnn_on_gpu=True,
+                                                  data_format='NHWC',
+                                                  dilations=[1, 1, 1, 1],
+                                                  name=None)
+            SCNN_D['conv_bias_relu_'+str(i)] = tf.nn.relu(tf.nn.bias_add(SCNN_D['conv_'+str(i)], b),
+                                                          name=None)
+            SCNN_D['concat_'+str(i)] = SCNN_D['conv_bias_relu_'+str(i)]
+        # State 5 : 无slice_top,slice_bottom，存在slice_conv,slice_add
+        elif i == 0 and FEATURE_MAP_H == 2:
+            SCNN_D['slice_conv_'+str(i)] = tf.slice(SCNN_D_input,
+                                                    begin=[0, i, 0, 0],
+                                                    size=[-1, 1, -1, -1])
+            SCNN_D['slice_add_'+str(i)] = tf.slice(SCNN_D_input,
+                                                   begin=[0, i+1, 0, 0],
+                                                   size=[-1, 1, -1, -1])
+            SCNN_D['tran_bef_'+str(i)] = tf.transpose(SCNN_D['slice_conv_'+str(i)],
+                                                      perm=[0, 3, 2, 1])
+            SCNN_D['pad_'+str(i)] = tf.pad(SCNN_D['tran_bef_'+str(i)],
+                                           paddings=PADDING,
+                                           mode='CONSTANT',
+                                           constant_values=0)
+            SCNN_D['conv_'+str(i)] = tf.nn.conv2d(SCNN_D['pad_'+str(i)],
+                                                  filter=w,
+                                                  strides=[1, 1, 1, 1],
+                                                  padding='VALID',
+                                                  use_cudnn_on_gpu=True,
+                                                  data_format='NHWC',
+                                                  dilations=[1, 1, 1, 1],
+                                                  name=None)
+            SCNN_D['conv_bias_relu_'+str(i)] = tf.nn.relu(tf.nn.bias_add(SCNN_D['conv_'+str(i)], b),
+                                                          name=None)
+            SCNN_D['add_'+str(i)] = tf.add(SCNN_D['conv_bias_relu_'+str(i)],
+                                           SCNN_D['slice_add_'+str(i)])
+            SCNN_D['concat_'+str(i)] = tf.concat(values=[SCNN_D['conv_bias_relu_'+str(i)],
+                                                         SCNN_D['add_'+str(i)]], axis=1)
+        # State 6 : 存在slice_top,slice_conv,slice_add,slice_bottom
+        else:
+            SCNN_D['slice_top_'+str(i)] = tf.slice(SCNN_D['concat_'+str(i-1)],
+                                                   begin=[0, 0, 0, 0],
+                                                   size=[-1, i, -1, -1])
+            SCNN_D['slice_conv_'+str(i)] = tf.slice(SCNN_D['concat_'+str(i-1)],
+                                                    begin=[0, i, 0, 0],
+                                                    size=[-1, 1, -1, -1])
+            SCNN_D['slice_add_'+str(i)] = tf.slice(SCNN_D['concat_'+str(i-1)],
+                                                   begin=[0, i+1, 0, 0],
+                                                   size=[-1, 1, -1, -1])
+            SCNN_D['slice_bottom_'+str(i)] = tf.slice(SCNN_D['concat_'+str(i-1)],
+                                                      begin=[0, i+2, 0, 0],
+                                                      size=[-1, -1, -1, -1])
+            SCNN_D['tran_bef_'+str(i)] = tf.transpose(SCNN_D['slice_conv_'+str(i)],
+                                                      perm=[0, 3, 2, 1])
+            SCNN_D['pad_'+str(i)] = tf.pad(SCNN_D['tran_bef_'+str(i)],
+                                           paddings=PADDING,
+                                           mode='CONSTANT',
+                                           constant_values=0)
+            SCNN_D['conv_'+str(i)] = tf.nn.conv2d(SCNN_D['pad_'+str(i)],
+                                                  filter=w,
+                                                  strides=[1, 1, 1, 1],
+                                                  padding='VALID',
+                                                  use_cudnn_on_gpu=True,
+                                                  data_format='NHWC',
+                                                  dilations=[1, 1, 1, 1],
+                                                  name=None)
+            SCNN_D['conv_bias_relu_'+str(i)] = tf.nn.relu(tf.nn.bias_add(SCNN_D['conv_'+str(i)], b),
+                                                          name=None)
+            SCNN_D['add_'+str(i)] = tf.add(SCNN_D['conv_bias_relu_'+str(i)],
+                                           SCNN_D['slice_add_'+str(i)])
+            SCNN_D['concat_'+str(i)] = tf.concat(values=[SCNN_D['slice_top_'+str(i)],
+                                                         SCNN_D['conv_bias_relu_' +
+                                                                str(i)],
+                                                         SCNN_D['add_' +
+                                                                str(i)],
+                                                         SCNN_D['slice_bottom_'+str(i)]], axis=1)
+
+    return SCNN_D['concat_'+str(FEATURE_MAP_H-1)]
+
+
+def SCNN_U_F(SCNN_U_input):
+    '''
+        SCNN_Up 向上传递信息
+
+        状态释义：
+            state = 1：(when i == H-1 && H > 2)
+                无slice_bottom,存在slice_conv,slice_add,slice_top
+            state = 2: (when i == 1 && H > 2)
+                无slice_top，存在slice_bottom,slice_conv,slice_add
+            state = 3: (when i == 0 && H > 1)
+                无slice_add,slice_top，存在slice_bottom,slice_conv
+            state = 4: (when H == 1)
+                无slice_top,slice_add,slice_bottom，存在slice_conv
+            state = 5: (when i == H-1 && H == 2)
+                无slice_top,slice_bottom，存在slice_conv,slice_add
+            state = 6:
+                存在slice_top,slice_conv,slice_add,slice_bottom
+    '''
+    CHANNELS = SCNN_U_input.shape[3]
+    FEATURE_MAP_H = SCNN_U_input.shape[1]
+    # 声明参数
+    w = tf.get_variable(name='w_scnn_u',
+                        shape=[CHANNELS,
+                               SCNN_KERNEL_LENGTH,
+                               1,
+                               CHANNELS],
+                        initializer=tf.keras.initializers.zeros(),
+                        trainable = False,
+                        regularizer=tf.keras.regularizers.l2())
+    b = tf.Variable(tf.zeros(CHANNELS),
+                    trainable = False,
+                    name="b_scnn_u")
+
+    # 用于动态生成网络层
+    SCNN_U = {}
+
+    for i in range(FEATURE_MAP_H-1, -1, -1):
+        # State 1 : 无slice_bottom,存在slice_conv,slice_add,slice_top
+        if i == FEATURE_MAP_H-1 and FEATURE_MAP_H > 2:
+            SCNN_U['slice_conv_'+str(i)] = tf.slice(SCNN_U_input,
+                                                    begin=[0, i, 0, 0],
+                                                    size=[-1, 1, -1, -1])
+            SCNN_U['slice_add_'+str(i)] = tf.slice(SCNN_U_input,
+                                                   begin=[0, i-1, 0, 0],
+                                                   size=[-1, 1, -1, -1])
+            SCNN_U['slice_top_'+str(i)] = tf.slice(SCNN_U_input,
+                                                   begin=[0, 0, 0, 0],
+                                                   size=[-1, i-1, -1, -1])
+            SCNN_U['tran_bef_'+str(i)] = tf.transpose(SCNN_U['slice_conv_'+str(i)],
+                                                      perm=[0, 3, 2, 1])
+            SCNN_U['pad_'+str(i)] = tf.pad(SCNN_U['tran_bef_'+str(i)],
+                                           paddings=PADDING,
+                                           mode='CONSTANT',
+                                           constant_values=0)
+            SCNN_U['conv_'+str(i)] = tf.nn.conv2d(SCNN_U['pad_'+str(i)],
+                                                  filter=w,
+                                                  strides=[1, 1, 1, 1],
+                                                  padding='VALID',
+                                                  use_cudnn_on_gpu=True,
+                                                  data_format='NHWC',
+                                                  dilations=[1, 1, 1, 1])
+            SCNN_U['conv_bias_relu_'+str(i)] = tf.nn.relu(tf.nn.bias_add(SCNN_U['conv_'+str(i)], b),
+                                                          name=None)
+            SCNN_U['add_'+str(i)] = tf.add(SCNN_U['conv_bias_relu_'+str(i)],
+                                           SCNN_U['slice_add_'+str(i)])
+            SCNN_U['concat_'+str(i)] = tf.concat(values=[SCNN_U['slice_top_'+str(i)],
+                                                         SCNN_U['add_' +
+                                                                str(i)],
+                                                         SCNN_U['conv_bias_relu_'+str(i)]], axis=1)
+        # State 2 : 无slice_top，存在slice_bottom,slice_conv,slice_add
+        elif i == 1 and FEATURE_MAP_H > 2:
+            SCNN_U['slice_add_'+str(i)] = tf.slice(SCNN_U['concat_'+str(i+1)],
+                                                   begin=[0, 0, 0, 0],
+                                                   size=[-1, i, -1, -1])
+            SCNN_U['slice_conv_'+str(i)] = tf.slice(SCNN_U['concat_'+str(i+1)],
+                                                    begin=[0, i, 0, 0],
+                                                    size=[-1, 1, -1, -1])
+            SCNN_U['slice_bottom_'+str(i)] = tf.slice(SCNN_U['concat_'+str(i+1)],
+                                                      begin=[0, i+1, 0, 0],
+                                                      size=[-1, -1, -1, -1])
+            SCNN_U['tran_bef_'+str(i)] = tf.transpose(SCNN_U['slice_conv_'+str(i)],
+                                                      perm=[0, 3, 2, 1])
+            SCNN_U['pad_'+str(i)] = tf.pad(SCNN_U['tran_bef_'+str(i)],
+                                           paddings=PADDING,
+                                           mode='CONSTANT',
+                                           constant_values=0)
+            SCNN_U['conv_'+str(i)] = tf.nn.conv2d(SCNN_U['pad_'+str(i)],
+                                                  filter=w,
+                                                  strides=[1, 1, 1, 1],
+                                                  padding='VALID',
+                                                  use_cudnn_on_gpu=True,
+                                                  data_format='NHWC',
+                                                  dilations=[1, 1, 1, 1])
+            SCNN_U['conv_bias_relu_'+str(i)] = tf.nn.relu(tf.nn.bias_add(SCNN_U['conv_'+str(i)], b),
+                                                          name=None)
+            SCNN_U['add_'+str(i)] = tf.add(SCNN_U['conv_bias_relu_'+str(i)],
+                                           SCNN_U['slice_add_'+str(i)])
+            SCNN_U['concat_'+str(i)] = tf.concat(values=[SCNN_U['add_'+str(i)],
+                                                         SCNN_U['conv_bias_relu_' +
+                                                                str(i)],
+                                                         SCNN_U['slice_bottom_'+str(i)]], axis=1)
+        # State 3 : 无slice_add,slice_top，存在slice_bottom,slice_conv
+        elif i == 0 and FEATURE_MAP_H > 1:
+            SCNN_U['slice_conv_'+str(i)] = tf.slice(SCNN_U['concat_'+str(i+1)],
+                                                    begin=[0, i, 0, 0],
+                                                    size=[-1, 1, -1, -1])
+            SCNN_U['slice_bottom_'+str(i)] = tf.slice(SCNN_U['concat_'+str(i+1)],
+                                                      begin=[0, i+1, 0, 0],
+                                                      size=[-1, -1, -1, -1])
+            SCNN_U['tran_bef_'+str(i)] = tf.transpose(SCNN_U['slice_conv_'+str(i)],
+                                                      perm=[0, 3, 2, 1])
+            SCNN_U['pad_'+str(i)] = tf.pad(SCNN_U['tran_bef_'+str(i)],
+                                           paddings=PADDING,
+                                           mode='CONSTANT',
+                                           constant_values=0)
+            SCNN_U['conv_'+str(i)] = tf.nn.conv2d(SCNN_U['pad_'+str(i)],
+                                                  filter=w,
+                                                  strides=[1, 1, 1, 1],
+                                                  padding='VALID',
+                                                  use_cudnn_on_gpu=True,
+                                                  data_format='NHWC',
+                                                  dilations=[1, 1, 1, 1],
+                                                  name=None)
+            SCNN_U['conv_bias_relu_'+str(i)] = tf.nn.relu(tf.nn.bias_add(SCNN_U['conv_'+str(i)], b),
+                                                          name=None)
+            SCNN_U['concat_'+str(i)] = tf.concat(values=[SCNN_U['conv_bias_relu_'+str(i)],
+                                                         SCNN_U['slice_bottom_'+str(i)]], axis=1)
+        # State 4 : 无slice_top,slice_add,slice_bottom，存在slice_conv
+        elif FEATURE_MAP_H == 1:
+            SCNN_U['slice_conv_'+str(i)] = tf.slice(SCNN_U_input,
+                                                    begin=[0, i, 0, 0],
+                                                    size=[-1, -1, -1, -1])
+            SCNN_U['tran_bef_'+str(i)] = tf.transpose(SCNN_U['slice_conv_'+str(i)],
+                                                      perm=[0, 3, 2, 1])
+            SCNN_U['pad_'+str(i)] = tf.pad(SCNN_U['tran_bef_'+str(i)],
+                                           paddings=PADDING,
+                                           mode='CONSTANT',
+                                           constant_values=0)
+            SCNN_U['conv_'+str(i)] = tf.nn.conv2d(SCNN_U['pad_'+str(i)],
+                                                  filter=w,
+                                                  strides=[1, 1, 1, 1],
+                                                  padding='VALID',
+                                                  use_cudnn_on_gpu=True,
+                                                  data_format='NHWC',
+                                                  dilations=[1, 1, 1, 1],
+                                                  name=None)
+            SCNN_U['conv_bias_relu_'+str(i)] = tf.nn.relu(tf.nn.bias_add(SCNN_U['conv_'+str(i)], b),
+                                                          name=None)
+            SCNN_U['concat_'+str(i)] = SCNN_U['conv_bias_relu_'+str(i)]
+        # State 5 : 无slice_top,slice_bottom，存在slice_conv,slice_add
+        elif i == FEATURE_MAP_H-1 and FEATURE_MAP_H == 2:
+            SCNN_U['slice_add_'+str(i)] = tf.slice(SCNN_U_input,
+                                                   begin=[0, i, 0, 0],
+                                                   size=[-1, 1, -1, -1])
+            SCNN_U['slice_conv_'+str(i)] = tf.slice(SCNN_U_input,
+                                                    begin=[0, i+1, 0, 0],
+                                                    size=[-1, 1, -1, -1])
+            SCNN_U['tran_bef_'+str(i)] = tf.transpose(SCNN_U['slice_conv_'+str(i)],
+                                                      perm=[0, 3, 2, 1])
+            SCNN_U['pad_'+str(i)] = tf.pad(SCNN_U['tran_bef_'+str(i)],
+                                           paddings=PADDING,
+                                           mode='CONSTANT',
+                                           constant_values=0)
+            SCNN_U['conv_'+str(i)] = tf.nn.conv2d(SCNN_U['pad_'+str(i)],
+                                                  filter=w,
+                                                  strides=[1, 1, 1, 1],
+                                                  padding='VALID',
+                                                  use_cudnn_on_gpu=True,
+                                                  data_format='NHWC',
+                                                  dilations=[1, 1, 1, 1],
+                                                  name=None)
+            SCNN_U['conv_bias_relu_'+str(i)] = tf.nn.relu(tf.nn.bias_add(SCNN_U['conv_'+str(i)], b),
+                                                          name=None)
+            SCNN_U['add_'+str(i)] = tf.add(SCNN_U['conv_bias_relu_'+str(i)],
+                                           SCNN_U['slice_add_'+str(i)])
+            SCNN_U['concat_'+str(i)] = tf.concat(values=[SCNN_U['add_'+str(i)],
+                                                         SCNN_U['conv_bias_relu_'+str(i)]], axis=1)
+        # State 6 : 存在slice_top,slice_conv,slice_add,slice_bottom
+        else:
+            SCNN_U['slice_top_'+str(i)] = tf.slice(SCNN_U['concat_'+str(i+1)],
+                                                   begin=[0, 0, 0, 0],
+                                                   size=[-1, i-1, -1, -1])
+            SCNN_U['slice_add_'+str(i)] = tf.slice(SCNN_U['concat_'+str(i+1)],
+                                                   begin=[0, i-1, 0, 0],
+                                                   size=[-1, 1, -1, -1])
+            SCNN_U['slice_conv_'+str(i)] = tf.slice(SCNN_U['concat_'+str(i+1)],
+                                                    begin=[0, i, 0, 0],
+                                                    size=[-1, 1, -1, -1])
+            SCNN_U['slice_bottom_'+str(i)] = tf.slice(SCNN_U['concat_'+str(i+1)],
+                                                      begin=[0, i+1, 0, 0],
+                                                      size=[-1, -1, -1, -1])
+            SCNN_U['tran_bef_'+str(i)] = tf.transpose(SCNN_U['slice_conv_'+str(i)],
+                                                      perm=[0, 3, 2, 1])
+            SCNN_U['pad_'+str(i)] = tf.pad(SCNN_U['tran_bef_'+str(i)],
+                                           paddings=PADDING,
+                                           mode='CONSTANT',
+                                           constant_values=0)
+            SCNN_U['conv_'+str(i)] = tf.nn.conv2d(SCNN_U['pad_'+str(i)],
+                                                  filter=w,
+                                                  strides=[1, 1, 1, 1],
+                                                  padding='VALID',
+                                                  use_cudnn_on_gpu=True,
+                                                  data_format='NHWC',
+                                                  dilations=[1, 1, 1, 1],
+                                                  name=None)
+            SCNN_U['conv_bias_relu_'+str(i)] = tf.nn.relu(tf.nn.bias_add(SCNN_U['conv_'+str(i)], b),
+                                                          name=None)
+            SCNN_U['add_'+str(i)] = tf.add(SCNN_U['conv_bias_relu_'+str(i)],
+                                           SCNN_U['slice_add_'+str(i)])
+            SCNN_U['concat_'+str(i)] = tf.concat(values=[SCNN_U['slice_top_'+str(i)],
+                                                         SCNN_U['add_' +
+                                                                str(i)],
+                                                         SCNN_U['conv_bias_relu_' +
+                                                                str(i)],
+                                                         SCNN_U['slice_bottom_'+str(i)]], axis=1)
+    return SCNN_U['concat_'+str(0)]
+
+
+def SCNN_R_F(SCNN_R_input):
+    '''
+        SCNN_Right 向右传递信息
+        状态释义：
+            state = 1：(when i == 0 && H > 2)
+                无slice_top，存在slice_conv,slice_add,slice_bottom
+            state = 2: (when i == H-2 && i > 0)
+                无slice_bottom，存在slice_top,slice_conv,slice_add
+            state = 3: (when i == H-1 && i > 0)
+                无slice_add,slice_bottom，存在slice_top,slice_conv
+            state = 4: (when H == 1)
+                无slice_top,slice_add,slice_bottom，存在slice_conv
+            state = 5: (when i == 0 && H == 2)
+                无slice_top,slice_bottom，存在slice_conv,slice_add
+            state = 6:
+                存在slice_top,slice_conv,slice_add,slice_bottom
+    '''
+    CHANNELS = SCNN_R_input.shape[3]
+    FEATURE_MAP_W = SCNN_R_input.shape[2]
+    # 声明参数
+    w = tf.get_variable(name='w_scnn_r',
+                        shape=[CHANNELS,
+                               SCNN_KERNEL_LENGTH,
+                               1,
+                               CHANNELS],
+                        initializer=tf.keras.initializers.zeros(),
+                        trainable = False,
+                        regularizer=tf.keras.regularizers.l2())
+    b = tf.Variable(tf.zeros(CHANNELS),
+                    trainable = False,
+                    name="b_scnn_r")
+
+    # 用于动态生成网络层
+    SCNN_R = {}
+
+    '''
+
+     '''
+    for i in range(FEATURE_MAP_W):
+        # State 1 : 无slice_top，存在slice_conv,slice_add,slice_bottom
+        if i == 0 and FEATURE_MAP_W > 2:
+            SCNN_R['slice_conv_'+str(i)] = tf.slice(SCNN_R_input,
+                                                    begin=[0, 0, i, 0],
+                                                    size=[-1, -1, 1, -1])
+            SCNN_R['slice_add_'+str(i)] = tf.slice(SCNN_R_input,
+                                                   begin=[0, 0, i+1, 0],
+                                                   size=[-1, -1, 1, -1])
+            SCNN_R['slice_bottom_'+str(i)] = tf.slice(SCNN_R_input,
+                                                      begin=[0, 0, i+2, 0],
+                                                      size=[-1, -1, -1, -1])
+            SCNN_R['tran_bef_'+str(i)] = tf.transpose(SCNN_R['slice_conv_'+str(i)],
+                                                      perm=[0, 3, 1, 2])
+            SCNN_R['pad_'+str(i)] = tf.pad(SCNN_R['tran_bef_'+str(i)],
+                                           paddings=PADDING,
+                                           mode='CONSTANT',
+                                           constant_values=0)
+            SCNN_R['conv_'+str(i)] = tf.nn.conv2d(SCNN_R['pad_'+str(i)],
+                                                  filter=w,
+                                                  strides=[1, 1, 1, 1],
+                                                  padding='VALID',
+                                                  use_cudnn_on_gpu=True,
+                                                  data_format='NHWC',
+                                                  dilations=[1, 1, 1, 1])
+            SCNN_R['conv_bias_relu_'+str(i)] = tf.nn.relu(tf.nn.bias_add(SCNN_R['conv_'+str(i)], b),
+                                                          name=None)
+            SCNN_R['tran_aft_'+str(i)] = tf.transpose(SCNN_R['conv_bias_relu_'+str(i)],
+                                                      perm=[0, 2, 1, 3])
+            SCNN_R['add_'+str(i)] = tf.add(SCNN_R['tran_aft_'+str(i)],
+                                           SCNN_R['slice_add_'+str(i)])
+
+            SCNN_R['concat_'+str(i)] = tf.concat(values=[SCNN_R['tran_aft_'+str(i)],
+                                                         SCNN_R['add_' +
+                                                                str(i)],
+                                                         SCNN_R['slice_bottom_'+str(i)]], axis=2)
+        # State 2 : 无slice_bottom，存在slice_top,slice_conv,slice_add
+        elif i == FEATURE_MAP_W - 2 and i > 0:
+            SCNN_R['slice_top_'+str(i)] = tf.slice(SCNN_R['concat_'+str(i-1)],
+                                                   begin=[0, 0, 0, 0],
+                                                   size=[-1, -1, i, -1])
+            SCNN_R['slice_conv_'+str(i)] = tf.slice(SCNN_R['concat_'+str(i-1)],
+                                                    begin=[0, 0, i, 0],
+                                                    size=[-1, -1, 1, -1])
+            SCNN_R['slice_add_'+str(i)] = tf.slice(SCNN_R['concat_'+str(i-1)],
+                                                   begin=[0, 0, i+1, 0],
+                                                   size=[-1, -1, 1, -1])
+            SCNN_R['tran_bef_'+str(i)] = tf.transpose(SCNN_R['slice_conv_'+str(i)],
+                                                      perm=[0, 3, 1, 2])
+            SCNN_R['pad_'+str(i)] = tf.pad(SCNN_R['tran_bef_'+str(i)],
+                                           paddings=PADDING,
+                                           mode='CONSTANT',
+                                           constant_values=0)
+            SCNN_R['conv_'+str(i)] = tf.nn.conv2d(SCNN_R['pad_'+str(i)],
+                                                  filter=w,
+                                                  strides=[1, 1, 1, 1],
+                                                  padding='VALID',
+                                                  use_cudnn_on_gpu=True,
+                                                  data_format='NHWC',
+                                                  dilations=[1, 1, 1, 1])
+            SCNN_R['conv_bias_relu_'+str(i)] = tf.nn.relu(tf.nn.bias_add(SCNN_R['conv_'+str(i)], b),
+                                                          name=None)
+            SCNN_R['tran_aft_'+str(i)] = tf.transpose(SCNN_R['conv_bias_relu_'+str(i)],
+                                                      perm=[0, 2, 1, 3])
+            SCNN_R['add_'+str(i)] = tf.add(SCNN_R['tran_aft_'+str(i)],
+                                           SCNN_R['slice_add_'+str(i)])
+            SCNN_R['concat_'+str(i)] = tf.concat(values=[SCNN_R['slice_top_'+str(i)],
+                                                         SCNN_R['tran_aft_' +
+                                                                str(i)],
+                                                         SCNN_R['add_'+str(i)]], axis=2)
+        # State 3 : 无slice_add,slice_bottom，存在slice_top,slice_conv
+        elif i == FEATURE_MAP_W - 1 and i > 0:
+            SCNN_R['slice_top_'+str(i)] = tf.slice(SCNN_R['concat_'+str(i-1)],
+                                                   begin=[0, 0, 0, 0],
+                                                   size=[-1, -1, i, -1])
+            SCNN_R['slice_conv_'+str(i)] = tf.slice(SCNN_R['concat_'+str(i-1)],
+                                                    begin=[0, 0, i, 0],
+                                                    size=[-1, -1, 1, -1])
+            SCNN_R['tran_bef_'+str(i)] = tf.transpose(SCNN_R['slice_conv_'+str(i)],
+                                                      perm=[0, 3, 1, 2])
+            SCNN_R['pad_'+str(i)] = tf.pad(SCNN_R['tran_bef_'+str(i)],
+                                           paddings=PADDING,
+                                           mode='CONSTANT',
+                                           constant_values=0)
+            SCNN_R['conv_'+str(i)] = tf.nn.conv2d(SCNN_R['pad_'+str(i)],
+                                                  filter=w,
+                                                  strides=[1, 1, 1, 1],
+                                                  padding='VALID',
+                                                  use_cudnn_on_gpu=True,
+                                                  data_format='NHWC',
+                                                  dilations=[1, 1, 1, 1],
+                                                  name=None)
+            SCNN_R['conv_bias_relu_'+str(i)] = tf.nn.relu(tf.nn.bias_add(SCNN_R['conv_'+str(i)], b),
+                                                          name=None)
+            SCNN_R['tran_aft_'+str(i)] = tf.transpose(SCNN_R['conv_bias_relu_'+str(i)],
+                                                      perm=[0, 2, 1, 3])
+            SCNN_R['concat_'+str(i)] = tf.concat(values=[SCNN_R['slice_top_'+str(i)],
+                                                         SCNN_R['tran_aft_'+str(i)]], axis=2)
+        # State 4 : 无slice_top,slice_add,slice_bottom，存在slice_conv
+        elif FEATURE_MAP_W == 1:
+            SCNN_R['slice_conv_'+str(i)] = tf.slice(SCNN_R_input,
+                                                    begin=[0, 0, i, 0],
+                                                    size=[-1, -1, -1, -1])
+            SCNN_R['tran_bef_'+str(i)] = tf.transpose(SCNN_R['slice_conv_'+str(i)],
+                                                      perm=[0, 3, 1, 2])
+            SCNN_R['pad_'+str(i)] = tf.pad(SCNN_R['tran_bef_'+str(i)],
+                                           paddings=PADDING,
+                                           mode='CONSTANT',
+                                           constant_values=0)
+            SCNN_R['conv_'+str(i)] = tf.nn.conv2d(SCNN_R['pad_'+str(i)],
+                                                  filter=w,
+                                                  strides=[1, 1, 1, 1],
+                                                  padding='VALID',
+                                                  use_cudnn_on_gpu=True,
+                                                  data_format='NHWC',
+                                                  dilations=[1, 1, 1, 1],
+                                                  name=None)
+            SCNN_R['conv_bias_relu_'+str(i)] = tf.nn.relu(tf.nn.bias_add(SCNN_R['conv_'+str(i)], b),
+                                                          name=None)
+            SCNN_R['tran_aft_'+str(i)] = tf.transpose(SCNN_R['conv_bias_relu_'+str(i)],
+                                                      perm=[0, 2, 1, 3])
+            SCNN_R['concat_'+str(i)] = SCNN_R['tran_aft_'+str(i)]
+        # State 5 : 无slice_top,slice_bottom，存在slice_conv,slice_add
+        elif i == 0 and FEATURE_MAP_W == 2:
+            SCNN_R['slice_conv_'+str(i)] = tf.slice(SCNN_R_input,
+                                                    begin=[0, 0, i, 0],
+                                                    size=[-1, -1, 1, -1])
+            SCNN_R['slice_add_'+str(i)] = tf.slice(SCNN_R_input,
+                                                   begin=[0, 0, i+1, 0],
+                                                   size=[-1, -1, 1, -1])
+            SCNN_R['tran_bef_'+str(i)] = tf.transpose(SCNN_R['slice_conv_'+str(i)],
+                                                      perm=[0, 3, 1, 2])
+            SCNN_R['pad_'+str(i)] = tf.pad(SCNN_R['tran_bef_'+str(i)],
+                                           paddings=PADDING,
+                                           mode='CONSTANT',
+                                           constant_values=0)
+            SCNN_R['conv_'+str(i)] = tf.nn.conv2d(SCNN_R['pad_'+str(i)],
+                                                  filter=w,
+                                                  strides=[1, 1, 1, 1],
+                                                  padding='VALID',
+                                                  use_cudnn_on_gpu=True,
+                                                  data_format='NHWC',
+                                                  dilations=[1, 1, 1, 1],
+                                                  name=None)
+            SCNN_R['conv_bias_relu_'+str(i)] = tf.nn.relu(tf.nn.bias_add(SCNN_R['conv_'+str(i)], b),
+                                                          name=None)
+            SCNN_R['tran_aft_'+str(i)] = tf.transpose(SCNN_R['conv_bias_relu_'+str(i)],
+                                                      perm=[0, 2, 1, 3])
+            SCNN_R['add_'+str(i)] = tf.add(SCNN_R['tran_aft_'+str(i)],
+                                           SCNN_R['slice_add_'+str(i)])
+            SCNN_R['concat_'+str(i)] = tf.concat(values=[SCNN_R['tran_aft_'+str(i)],
+                                                         SCNN_R['add_'+str(i)]], axis=2)
+        # State 6 : 存在slice_top,slice_conv,slice_add,slice_bottom
+        else:
+            SCNN_R['slice_top_'+str(i)] = tf.slice(SCNN_R['concat_'+str(i-1)],
+                                                   begin=[0, 0, 0, 0],
+                                                   size=[-1, -1, i, -1])
+            SCNN_R['slice_conv_'+str(i)] = tf.slice(SCNN_R['concat_'+str(i-1)],
+                                                    begin=[0, 0, i, 0],
+                                                    size=[-1, -1, 1, -1])
+            SCNN_R['slice_add_'+str(i)] = tf.slice(SCNN_R['concat_'+str(i-1)],
+                                                   begin=[0, 0, i+1, 0],
+                                                   size=[-1, -1, 1, -1])
+            SCNN_R['slice_bottom_'+str(i)] = tf.slice(SCNN_R['concat_'+str(i-1)],
+                                                      begin=[0, 0, i+2, 0],
+                                                      size=[-1, -1, -1, -1])
+            SCNN_R['tran_bef_'+str(i)] = tf.transpose(SCNN_R['slice_conv_'+str(i)],
+                                                      perm=[0, 3, 1, 2])
+            SCNN_R['pad_'+str(i)] = tf.pad(SCNN_R['tran_bef_'+str(i)],
+                                           paddings=PADDING,
+                                           mode='CONSTANT',
+                                           constant_values=0)
+            SCNN_R['conv_'+str(i)] = tf.nn.conv2d(SCNN_R['pad_'+str(i)],
+                                                  filter=w,
+                                                  strides=[1, 1, 1, 1],
+                                                  padding='VALID',
+                                                  use_cudnn_on_gpu=True,
+                                                  data_format='NHWC',
+                                                  dilations=[1, 1, 1, 1],
+                                                  name=None)
+            SCNN_R['conv_bias_relu_'+str(i)] = tf.nn.relu(tf.nn.bias_add(SCNN_R['conv_'+str(i)], b),
+                                                          name=None)
+            SCNN_R['tran_aft_'+str(i)] = tf.transpose(SCNN_R['conv_bias_relu_'+str(i)],
+                                                      perm=[0, 2, 1, 3])
+            SCNN_R['add_'+str(i)] = tf.add(SCNN_R['tran_aft_'+str(i)],
+                                           SCNN_R['slice_add_'+str(i)])
+            SCNN_R['concat_'+str(i)] = tf.concat(values=[SCNN_R['slice_top_'+str(i)],
+                                                         SCNN_R['tran_aft_' +
+                                                                str(i)],
+                                                         SCNN_R['add_' +
+                                                                str(i)],
+                                                         SCNN_R['slice_bottom_'+str(i)]], axis=2)
+
+    return SCNN_R['concat_'+str(FEATURE_MAP_W-1)]
+
+
+def SCNN_L_F(SCNN_L_input):
+    '''
+        SCNN_Left 向左传递信息
+
+        状态释义：
+            state = 1：(when i == H-1 && H > 2)
+                无slice_bottom,存在slice_conv,slice_add,slice_top
+            state = 2: (when i == 1 && H > 2)
+                无slice_top，存在slice_bottom,slice_conv,slice_add
+            state = 3: (when i == 0 && H > 1)
+                无slice_add,slice_top，存在slice_bottom,slice_conv
+            state = 4: (when H == 1)
+                无slice_top,slice_add,slice_bottom，存在slice_conv
+            state = 5: (when i == H-1 && H == 2)
+                无slice_top,slice_bottom，存在slice_conv,slice_add
+            state = 6:
+                存在slice_top,slice_conv,slice_add,slice_bottom
+    '''
+    CHANNELS = SCNN_L_input.shape[3]
+    FEATURE_MAP_W = SCNN_L_input.shape[2]
+    # 声明参数
+    w = tf.get_variable(name='w_scnn_l',
+                        shape=[CHANNELS,
+                               SCNN_KERNEL_LENGTH,
+                               1,
+                               CHANNELS],
+                        initializer=tf.keras.initializers.zeros(),
+                        trainable = False,
+                        regularizer=tf.keras.regularizers.l2())
+    b = tf.Variable(tf.zeros(CHANNELS),
+                    trainable = False,
+                    name="b_scnn_l")
+
+    # 用于动态生成网络层
+    SCNN_L = {}
+
+    for i in range(FEATURE_MAP_W-1, -1, -1):
+        # State 1 : 无slice_bottom,存在slice_conv,slice_add,slice_top
+        if i == FEATURE_MAP_W-1 and FEATURE_MAP_W > 2:
+            SCNN_L['slice_conv_'+str(i)] = tf.slice(SCNN_L_input,
+                                                    begin=[0, 0, i, 0],
+                                                    size=[-1, -1, 1, -1])
+            SCNN_L['slice_add_'+str(i)] = tf.slice(SCNN_L_input,
+                                                   begin=[0, 0, i-1, 0],
+                                                   size=[-1, -1, 1, -1])
+            SCNN_L['slice_top_'+str(i)] = tf.slice(SCNN_L_input,
+                                                   begin=[0, 0, 0, 0],
+                                                   size=[-1, -1, i-1, -1])
+            SCNN_L['tran_bef_'+str(i)] = tf.transpose(SCNN_L['slice_conv_'+str(i)],
+                                                      perm=[0, 3, 1, 2])
+            SCNN_L['pad_'+str(i)] = tf.pad(SCNN_L['tran_bef_'+str(i)],
+                                           paddings=PADDING,
+                                           mode='CONSTANT',
+                                           constant_values=0)
+            SCNN_L['conv_'+str(i)] = tf.nn.conv2d(SCNN_L['pad_'+str(i)],
+                                                  filter=w,
+                                                  strides=[1, 1, 1, 1],
+                                                  padding='VALID',
+                                                  use_cudnn_on_gpu=True,
+                                                  data_format='NHWC',
+                                                  dilations=[1, 1, 1, 1])
+            SCNN_L['conv_bias_relu_'+str(i)] = tf.nn.relu(tf.nn.bias_add(SCNN_L['conv_'+str(i)], b),
+                                                          name=None)
+            SCNN_L['conv_bias_relu_'+str(i)] = tf.transpose(SCNN_L['conv_bias_relu_'+str(i)],
+                                                            perm=[0, 2, 1, 3])
+            SCNN_L['add_'+str(i)] = tf.add(SCNN_L['conv_bias_relu_'+str(i)],
+                                           SCNN_L['slice_add_'+str(i)])
+            SCNN_L['concat_'+str(i)] = tf.concat(values=[SCNN_L['slice_top_'+str(i)],
+                                                         SCNN_L['add_' +
+                                                                str(i)],
+                                                         SCNN_L['conv_bias_relu_'+str(i)]], axis=2)
+        # State 2 : 无slice_top，存在slice_bottom,slice_conv,slice_add
+        elif i == 1 and FEATURE_MAP_W > 2:
+            SCNN_L['slice_add_'+str(i)] = tf.slice(SCNN_L['concat_'+str(i+1)],
+                                                   begin=[0, 0, 0, 0],
+                                                   size=[-1, -1, i, -1])
+            SCNN_L['slice_conv_'+str(i)] = tf.slice(SCNN_L['concat_'+str(i+1)],
+                                                    begin=[0, 0, i, 0],
+                                                    size=[-1, -1, 1, -1])
+            SCNN_L['slice_bottom_'+str(i)] = tf.slice(SCNN_L['concat_'+str(i+1)],
+                                                      begin=[0, 0, i+1, 0],
+                                                      size=[-1, -1, -1, -1])
+            SCNN_L['tran_bef_'+str(i)] = tf.transpose(SCNN_L['slice_conv_'+str(i)],
+                                                      perm=[0, 3, 1, 2])
+            SCNN_L['pad_'+str(i)] = tf.pad(SCNN_L['tran_bef_'+str(i)],
+                                           paddings=PADDING,
+                                           mode='CONSTANT',
+                                           constant_values=0)
+            SCNN_L['conv_'+str(i)] = tf.nn.conv2d(SCNN_L['pad_'+str(i)],
+                                                  filter=w,
+                                                  strides=[1, 1, 1, 1],
+                                                  padding='VALID',
+                                                  use_cudnn_on_gpu=True,
+                                                  data_format='NHWC',
+                                                  dilations=[1, 1, 1, 1])
+            SCNN_L['conv_bias_relu_'+str(i)] = tf.nn.relu(tf.nn.bias_add(SCNN_L['conv_'+str(i)], b),
+                                                          name=None)
+            SCNN_L['conv_bias_relu_'+str(i)] = tf.transpose(SCNN_L['conv_bias_relu_'+str(i)],
+                                                            perm=[0, 2, 1, 3])
+            SCNN_L['add_'+str(i)] = tf.add(SCNN_L['conv_bias_relu_'+str(i)],
+                                           SCNN_L['slice_add_'+str(i)])
+            SCNN_L['concat_'+str(i)] = tf.concat(values=[SCNN_L['add_'+str(i)],
+                                                         SCNN_L['conv_bias_relu_' +
+                                                                str(i)],
+                                                         SCNN_L['slice_bottom_'+str(i)]], axis=2)
+        # State 3 : 无slice_add,slice_top，存在slice_bottom,slice_conv
+        elif i == 0 and FEATURE_MAP_W > 1:
+            SCNN_L['slice_conv_'+str(i)] = tf.slice(SCNN_L['concat_'+str(i+1)],
+                                                    begin=[0, 0, i, 0],
+                                                    size=[-1, -1, 1, -1])
+            SCNN_L['slice_bottom_'+str(i)] = tf.slice(SCNN_L['concat_'+str(i+1)],
+                                                      begin=[0, 0, i+1, 0],
+                                                      size=[-1, -1, -1, -1])
+            SCNN_L['tran_bef_'+str(i)] = tf.transpose(SCNN_L['slice_conv_'+str(i)],
+                                                      perm=[0, 3, 1, 2])
+            SCNN_L['pad_'+str(i)] = tf.pad(SCNN_L['tran_bef_'+str(i)],
+                                           paddings=PADDING,
+                                           mode='CONSTANT',
+                                           constant_values=0)
+            SCNN_L['conv_'+str(i)] = tf.nn.conv2d(SCNN_L['pad_'+str(i)],
+                                                  filter=w,
+                                                  strides=[1, 1, 1, 1],
+                                                  padding='VALID',
+                                                  use_cudnn_on_gpu=True,
+                                                  data_format='NHWC',
+                                                  dilations=[1, 1, 1, 1],
+                                                  name=None)
+            SCNN_L['conv_bias_relu_'+str(i)] = tf.nn.relu(tf.nn.bias_add(SCNN_L['conv_'+str(i)], b),
+                                                          name=None)
+            SCNN_L['conv_bias_relu_'+str(i)] = tf.transpose(SCNN_L['conv_bias_relu_'+str(i)],
+                                                            perm=[0, 2, 1, 3])
+            SCNN_L['concat_'+str(i)] = tf.concat(values=[SCNN_L['conv_bias_relu_'+str(i)],
+                                                         SCNN_L['slice_bottom_'+str(i)]], axis=2)
+        # State 4 : 无slice_top,slice_add,slice_bottom，存在slice_conv
+        elif FEATURE_MAP_W == 1:
+            SCNN_L['slice_conv_'+str(i)] = tf.slice(SCNN_L_input,
+                                                    begin=[0, 0, i, 0],
+                                                    size=[-1, -1, -1, -1])
+            SCNN_L['tran_bef_'+str(i)] = tf.transpose(SCNN_L['slice_conv_'+str(i)],
+                                                      perm=[0, 3, 1, 2])
+            SCNN_L['pad_'+str(i)] = tf.pad(SCNN_L['tran_bef_'+str(i)],
+                                           paddings=PADDING,
+                                           mode='CONSTANT',
+                                           constant_values=0)
+            SCNN_L['conv_'+str(i)] = tf.nn.conv2d(SCNN_L['pad_'+str(i)],
+                                                  filter=w,
+                                                  strides=[1, 1, 1, 1],
+                                                  padding='VALID',
+                                                  use_cudnn_on_gpu=True,
+                                                  data_format='NHWC',
+                                                  dilations=[1, 1, 1, 1],
+                                                  name=None)
+            SCNN_L['conv_bias_relu_'+str(i)] = tf.nn.relu(tf.nn.bias_add(SCNN_L['conv_'+str(i)], b),
+                                                          name=None)
+            SCNN_L['conv_bias_relu_'+str(i)] = tf.transpose(SCNN_L['conv_bias_relu_'+str(i)],
+                                                            perm=[0, 2, 1, 3])
+            SCNN_L['concat_'+str(i)] = SCNN_L['conv_bias_relu_'+str(i)]
+        # State 5 : 无slice_top,slice_bottom，存在slice_conv,slice_add
+        elif i == FEATURE_MAP_W-1 and FEATURE_MAP_W == 2:
+            SCNN_L['slice_add_'+str(i)] = tf.slice(SCNN_L_input,
+                                                   begin=[0, 0, i, 0],
+                                                   size=[-1, -1, 1, -1])
+            SCNN_L['slice_conv_'+str(i)] = tf.slice(SCNN_L_input,
+                                                    begin=[0, 0, i+1, 0],
+                                                    size=[-1, -1, 1, -1])
+            SCNN_L['tran_bef_'+str(i)] = tf.transpose(SCNN_L['slice_conv_'+str(i)],
+                                                      perm=[0, 3, 1, 2])
+            SCNN_L['pad_'+str(i)] = tf.pad(SCNN_L['tran_bef_'+str(i)],
+                                           paddings=PADDING,
+                                           mode='CONSTANT',
+                                           constant_values=0)
+            SCNN_L['conv_'+str(i)] = tf.nn.conv2d(SCNN_L['pad_'+str(i)],
+                                                  filter=w,
+                                                  strides=[1, 1, 1, 1],
+                                                  padding='VALID',
+                                                  use_cudnn_on_gpu=True,
+                                                  data_format='NHWC',
+                                                  dilations=[1, 1, 1, 1],
+                                                  name=None)
+            SCNN_L['conv_bias_relu_'+str(i)] = tf.nn.relu(tf.nn.bias_add(SCNN_L['conv_'+str(i)], b),
+                                                          name=None)
+            SCNN_L['conv_bias_relu_'+str(i)] = tf.transpose(SCNN_L['conv_bias_relu_'+str(i)],
+                                                            perm=[0, 2, 1, 3])
+            SCNN_L['add_'+str(i)] = tf.add(SCNN_L['conv_bias_relu_'+str(i)],
+                                           SCNN_L['slice_add_'+str(i)])
+            SCNN_L['concat_'+str(i)] = tf.concat(values=[SCNN_L['add_'+str(i)],
+                                                         SCNN_L['conv_bias_relu_'+str(i)]], axis=2)
+        # State 6 : 存在slice_top,slice_conv,slice_add,slice_bottom
+        else:
+            SCNN_L['slice_top_'+str(i)] = tf.slice(SCNN_L['concat_'+str(i+1)],
+                                                   begin=[0, 0, 0, 0],
+                                                   size=[-1, -1, i-1, -1])
+            SCNN_L['slice_add_'+str(i)] = tf.slice(SCNN_L['concat_'+str(i+1)],
+                                                   begin=[0, 0, i-1, 0],
+                                                   size=[-1, -1, 1, -1])
+            SCNN_L['slice_conv_'+str(i)] = tf.slice(SCNN_L['concat_'+str(i+1)],
+                                                    begin=[0, 0, i, 0],
+                                                    size=[-1, -1, 1, -1])
+            SCNN_L['slice_bottom_'+str(i)] = tf.slice(SCNN_L['concat_'+str(i+1)],
+                                                      begin=[0, 0, i+1, 0],
+                                                      size=[-1, -1, -1, -1])
+            SCNN_L['tran_bef_'+str(i)] = tf.transpose(SCNN_L['slice_conv_'+str(i)],
+                                                      perm=[0, 3, 1, 2])
+            SCNN_L['pad_'+str(i)] = tf.pad(SCNN_L['tran_bef_'+str(i)],
+                                           paddings=PADDING,
+                                           mode='CONSTANT',
+                                           constant_values=0)
+            SCNN_L['conv_'+str(i)] = tf.nn.conv2d(SCNN_L['pad_'+str(i)],
+                                                  filter=w,
+                                                  strides=[1, 1, 1, 1],
+                                                  padding='VALID',
+                                                  use_cudnn_on_gpu=True,
+                                                  data_format='NHWC',
+                                                  dilations=[1, 1, 1, 1],
+                                                  name=None)
+            SCNN_L['conv_bias_relu_'+str(i)] = tf.nn.relu(tf.nn.bias_add(SCNN_L['conv_'+str(i)], b),
+                                                          name=None)
+            SCNN_L['conv_bias_relu_'+str(i)] = tf.transpose(SCNN_L['conv_bias_relu_'+str(i)],
+                                                            perm=[0, 2, 1, 3])
+            SCNN_L['add_'+str(i)] = tf.add(SCNN_L['conv_bias_relu_'+str(i)],
+                                           SCNN_L['slice_add_'+str(i)])
+            SCNN_L['concat_'+str(i)] = tf.concat(values=[SCNN_L['slice_top_'+str(i)],
+                                                         SCNN_L['add_' +
+                                                                str(i)],
+                                                         SCNN_L['conv_bias_relu_' +
+                                                                str(i)],
+                                                         SCNN_L['slice_bottom_'+str(i)]], axis=2)
+    return SCNN_L['concat_'+str(0)]
 
 
 def SCNN_D(SCNN_D_input):
@@ -583,9 +1486,6 @@ def SCNN_R(SCNN_R_input):
     # 用于动态生成网络层
     SCNN_R = {}
 
-    '''
-
-     '''
     for i in range(FEATURE_MAP_W):
         # State 1 : 无slice_top，存在slice_conv,slice_add,slice_bottom
         if i == 0 and FEATURE_MAP_W > 2:
@@ -1060,7 +1960,7 @@ def CreateCNNModel(feature_dim):
     dropout_1 = tf.keras.layers.Dropout(0.1)(fc_1)
 
     fc_2 = tf.keras.layers.Dense(units=128,
-                                 activation='tanh',
+                                 activation='relu',
                                  use_bias=True,
                                  kernel_initializer=tf.keras.initializers.random_uniform(),
                                  bias_initializer=tf.zeros_initializer())(dropout_1)
@@ -1091,18 +1991,36 @@ def CreateMVCNNModel(feature_dim):
     inputs = tf.keras.Input(shape=(feature_dim, 300, 1),
                             name='Input_Layer',
                             dtype=tf.float32)
+    # '''
+    # with tf.name_scope('SCNN_D_%d' % feature_dim):
+    #     SCNN_D_out = tf.keras.layers.Lambda(SCNN_D)(inputs)
+    # with tf.name_scope('SCNN_U_%d' % feature_dim):
+    #     SCNN_U_out = tf.keras.layers.Lambda(SCNN_U)(inputs)
+    # with tf.name_scope('SCNN_R_%d' % feature_dim):
+    #     SCNN_R_out = tf.keras.layers.Lambda(SCNN_R)(inputs)
+    # with tf.name_scope('SCNN_L_%d' % feature_dim):
+    #     SCNN_L_out = tf.keras.layers.Lambda(SCNN_L)(inputs)
+    # '''
 
-    with tf.name_scope('SCNN_D_%d' % feature_dim):
-        SCNN_D_out = tf.keras.layers.Lambda(SCNN_D)(inputs)
-    with tf.name_scope('SCNN_U_%d' % feature_dim):
-        SCNN_U_out = tf.keras.layers.Lambda(SCNN_U)(inputs)
-    with tf.name_scope('SCNN_R_%d' % feature_dim):
-        SCNN_R_out = tf.keras.layers.Lambda(SCNN_R)(inputs)
-    with tf.name_scope('SCNN_L_%d' % feature_dim):
-        SCNN_L_out = tf.keras.layers.Lambda(SCNN_L)(inputs)
-
+    # '''
+    # with tf.name_scope('SCNN_D_%d' % feature_dim):
+    #     SCNN_D_out = tf.keras.layers.Lambda(SCNN_D_F)(inputs)
+    # with tf.name_scope('SCNN_U_%d' % feature_dim):
+    #     SCNN_U_out = tf.keras.layers.Lambda(SCNN_U_F)(inputs)
+    # with tf.name_scope('SCNN_R_%d' % feature_dim):
+    #     SCNN_R_out = tf.keras.layers.Lambda(SCNN_R_F)(inputs)
+    # with tf.name_scope('SCNN_L_%d' % feature_dim):
+    #     SCNN_L_out = tf.keras.layers.Lambda(SCNN_L_F)(inputs)
+    # '''
+    SCNN_L_out = MvCnnLeftLayer(SCNN_KERNEL_LENGTH)(inputs)
+    SCNN_R_out = MvCnnRightLayer(SCNN_KERNEL_LENGTH)(inputs)
+    SCNN_U_out = MvCnnUpLayer(SCNN_KERNEL_LENGTH)(inputs)
+    SCNN_D_out = MvCnnDownLayer(SCNN_KERNEL_LENGTH)(inputs)
+    
     concat = tf.keras.layers.concatenate(
         [inputs, SCNN_D_out, SCNN_U_out, SCNN_R_out, SCNN_L_out], axis=-1)
+    
+    # concat = tf.keras.layers.concatenate([inputs, SCNN_L_out], axis=-1)
 
     conv_1 = tf.keras.layers.Conv2D(filters=CONV1_FILTERS,
                                     kernel_size=(3, 3),
@@ -1141,7 +2059,7 @@ def CreateMVCNNModel(feature_dim):
     fc_input = tf.keras.layers.Flatten()(maxpool_2)
 
     fc_1 = tf.keras.layers.Dense(units=512,
-                                 activation='relu',
+                                 activation='tanh',
                                  use_bias=True,
                                  kernel_initializer=tf.keras.initializers.glorot_normal(),
                                  bias_initializer=tf.zeros_initializer(),
@@ -1151,7 +2069,7 @@ def CreateMVCNNModel(feature_dim):
     dropout_1 = tf.keras.layers.Dropout(0.1)(fc_1)
 
     fc_2 = tf.keras.layers.Dense(units=128,
-                                 activation='relu',
+                                 activation='tanh',
                                  use_bias=True,
                                  kernel_initializer=tf.keras.initializers.glorot_normal(),
                                  bias_initializer=tf.zeros_initializer(),
@@ -1291,7 +2209,7 @@ def ModelCrossValidation(creatModel,dim, x_train, y_train, x_test, y_test, skf, 
             name            测试名称
     '''
     # 打开日志输出
-    logfile = open(log_folder+name+'.txt', 'w', encoding='utf-8')
+    logfile = open(logfolder+name+'.txt', 'w', encoding='utf-8')
     idx = 1
     logPicFolder = logfolder+"trainLogPic/"+name+"/"
     os.makedirs(logPicFolder)
@@ -1380,25 +2298,116 @@ def ModelCrossValidation(creatModel,dim, x_train, y_train, x_test, y_test, skf, 
 
 
 if __name__ == "__main__":
+    log_folder = "./experiment/" + time.strftime('%Y-%m-%d %H.%M.%S', time.localtime(time.time()))+'/'
+
     parser = argparse.ArgumentParser()
     parser.add_argument("-b", "--batch_size", type=int, default=64,
                     help="Batch Size")
     parser.add_argument("-e", "--epoch", type=int, default=10,
                     help="Train Epoch")
+    parser.add_argument("-g", "--gpu", type=str, default="0",
+                    help="GPU Device")
+    parser.add_argument("-l", "--logdir", type=str, default=log_folder,
+                    help="Log Dir")
+    parser.add_argument("-m", "--model", type=str, default="0123456789abcdef",
+                    help="select model")
     args = parser.parse_args()
     EPOCHS = args.epoch
     BATCH_SIZE = args.batch_size
+    os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu
     # load data
     x_train, x_train_FA, x_train_DA, x_train_DA_FA, x_test, x_test_FA, y_train, y_train_DA, y_test = LoadData()
     # cross validation
     # n-fold=10
-    skf = StratifiedKFold(n_splits=10, shuffle=True, random_state=6)
-    log_folder = "./experiment/" + \
-        time.strftime('%Y-%m-%d %H.%M.%S', time.localtime(time.time()))+'/'
+    skf = StratifiedKFold(n_splits=10, shuffle=True)
+    log_folder = args.logdir
     os.makedirs(log_folder)
+    # Experiment 1
+    # orign CNN
+    if "0" in args.model:
+        ModelCrossValidation(CreateCNNModel,6, x_train, y_train, x_test, y_test, skf, log_folder, "orignCNN")
+               
+    # Experiment 2
+    # orign RNN
+    if "1" in args.model:
+        ModelCrossValidation(CreateSimpleRNNModel,6, np.squeeze(x_train), y_train, np.squeeze(x_test),y_test, skf, log_folder, "orignSimpleRNN")
     
-    # # Experiment 1
-    # # orign CNN
+    # Experiment 3
+    # orign LSTM
+    if "2" in args.model:
+        ModelCrossValidation(CreateLSTMModel,6, np.squeeze(x_train), y_train, np.squeeze(x_test),y_test, skf, log_folder, "orignLSTM")
+
+    # Experiment 4
+    # orign MV-CNN
+    if "3" in args.model:
+        ModelCrossValidation(CreateMVCNNModel,6, x_train, y_train, x_test, y_test, skf, log_folder, "orignMVCNN")
+
+    # Experiment 5
+    # orign+DA CNN
+    if "4" in args.model:
+        ModelCrossValidation(CreateCNNModel,6, x_train_DA, y_train_DA, x_test, y_test, skf, log_folder, "orignDACNN")
+               
+    # Experiment 6
+    # orign+DA RNN
+    if "5" in args.model:
+        ModelCrossValidation(CreateSimpleRNNModel,6, np.squeeze(x_train_DA), y_train_DA, np.squeeze(x_test), y_test, skf, log_folder, "orignDASimpleRNN")
+    
+    # Experiment 7
+    # orign+DA LSTM
+    if "6" in args.model:
+        ModelCrossValidation(CreateLSTMModel,6, np.squeeze(x_train_DA), y_train_DA, np.squeeze(x_test), y_test, skf, log_folder, "orignDALSTM")
+
+    # Experiment 8
+    # orign+DA MV-CNN
+    if "7" in args.model:
+        ModelCrossValidation(CreateMVCNNModel,6, x_train_DA, y_train_DA, x_test, y_test, skf, log_folder, "orignDAMVCNN")
+
+    # Experiment 9
+    # orign+FA CNN
+    if "8" in args.model:
+        ModelCrossValidation(CreateCNNModel,38, x_train_FA, y_train, x_test_FA, y_test, skf, log_folder, "orignFACNN")
+               
+    # Experiment 10
+    # orign+FA RNN
+    if "9" in args.model:
+        ModelCrossValidation(CreateSimpleRNNModel,38, np.squeeze(x_train_FA), y_train, np.squeeze(x_test_FA), y_test, skf, log_folder, "orignFASimpleRNN")
+    
+    # Experiment 11
+    # orign+FA LSTM
+    if "a" in args.model:
+        ModelCrossValidation(CreateLSTMModel,38, np.squeeze(x_train_FA), y_train, np.squeeze(x_test_FA), y_test, skf, log_folder, "orignFALSTM")
+
+    # Experiment 12
+    # orign+FA MV-CNN
+    if "b" in args.model:
+        ModelCrossValidation(CreateMVCNNModel,38, x_train_FA, y_train, x_test_FA, y_test, skf, log_folder, "orignFAMVCNN")
+
+    # Experiment 13
+    # orign+DA+FA CNN
+    if "c" in args.model:
+        ModelCrossValidation(CreateCNNModel,38, x_train_DA_FA, y_train_DA, x_test_FA, y_test, skf, log_folder, "orignDAFACNN")
+               
+    # Experiment 14
+    # orign+DA+FA RNN
+    if "d" in args.model:
+        ModelCrossValidation(CreateSimpleRNNModel,38, np.squeeze(x_train_DA_FA), y_train_DA, np.squeeze(x_test_FA), y_test, skf, log_folder, "orignDAFASimpleRNN")
+    
+    # Experiment 15
+    # orign+DA+FA LSTM
+    if "e" in args.model:
+        ModelCrossValidation(CreateLSTMModel,38, np.squeeze(x_train_DA_FA), y_train_DA, np.squeeze(x_test_FA), y_test, skf, log_folder, "orignDAFALSTM")
+    
+    # Experiment 16
+    # orign+DA+FA MV-CNN
+    if "f" in args.model:
+        ModelCrossValidation(CreateMVCNNModel,38, x_train_DA_FA, y_train_DA, x_test_FA, y_test, skf, log_folder, "orignDAFAMVCNN")
+
+
+
+
+    '''
+    # Experiment 1
+    # orign CNN
     ModelCrossValidation(CreateCNNModel,6, x_train, y_train, x_test,
                  y_test, skf, log_folder, "orign+CNN")
                
@@ -1415,7 +2424,7 @@ if __name__ == "__main__":
     # Experiment 4
     # orign MV-CNN
     ModelCrossValidation(CreateMVCNNModel,6, x_train, y_train, x_test,
-                 y_test, skf, log_folder, "orign+MV_CNN")
+                y_test, skf, log_folder, "orign+MV_CNN")
 
     # Experiment 5
     # orign+DA CNN
@@ -1435,7 +2444,7 @@ if __name__ == "__main__":
     # Experiment 8
     # orign+DA MV-CNN
     ModelCrossValidation(CreateMVCNNModel,6, x_train_DA, y_train_DA, x_test,
-                 y_test, skf, log_folder, "orign+DA+MV_CNN")
+                y_test, skf, log_folder, "orign+DA+MV_CNN")
 
     # Experiment 9
     # orign+FA CNN
@@ -1455,8 +2464,8 @@ if __name__ == "__main__":
     # Experiment 12
     # orign+FA MV-CNN
     ModelCrossValidation(CreateMVCNNModel,38, x_train_FA, y_train, x_test_FA,
-                 y_test, skf, log_folder, "orign+FA+MV_CNN")
-
+                y_test, skf, log_folder, "orign+FA+MV_CNN")
+    
     # Experiment 13
     # orign+DA+FA CNN
     ModelCrossValidation(CreateCNNModel,38, x_train_DA_FA, y_train_DA, x_test_FA,
@@ -1476,3 +2485,4 @@ if __name__ == "__main__":
     # orign+DA+FA MV-CNN
     ModelCrossValidation(CreateMVCNNModel,38, x_train_DA_FA, y_train_DA, x_test_FA,
                  y_test, skf, log_folder, "orign+DA+FA+MV_CNN")
+    '''

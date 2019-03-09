@@ -1960,7 +1960,7 @@ def CreateCNNModel(feature_dim):
     dropout_1 = tf.keras.layers.Dropout(0.1)(fc_1)
 
     fc_2 = tf.keras.layers.Dense(units=128,
-                                 activation='relu',
+                                 activation='tanh',
                                  use_bias=True,
                                  kernel_initializer=tf.keras.initializers.random_uniform(),
                                  bias_initializer=tf.zeros_initializer())(dropout_1)
@@ -2270,7 +2270,7 @@ def ModelCrossValidation(creatModel,dim, x_train, y_train, x_test, y_test, skf, 
 
         for i in range(4):
             plt.figure(figsize=(6, 4))
-            plt.title(Labels[i])
+            plt.title(name+str(idx)+Labels[i])
             plt.plot(np.arange(1, EPOCHS+1, 1),
                      history.history[Labels[i]], '-r*')
             plt.grid(True, linestyle="-.", color="gray", linewidth="0.5")
